@@ -1,0 +1,435 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum RoomTimeBlockSource {
+  OFFICIAL_OCCUPANCY
+  ADMIN_BLOCK
+  ROOM_BOOKING
+
+  @@map("room_time_block_source")
+}
+
+enum RoomTimeBlockState {
+  ACTIVE
+  RELEASED
+
+  @@map("room_time_block_state")
+}
+
+enum RoomBookingStatus {
+  PENDING_PAYMENT
+  CONFIRMED
+  CHECKED_IN
+  COMPLETED
+  EXPIRED
+  CANCELLED
+  NO_SHOW
+  REVOKED
+
+  @@map("room_booking_status")
+}
+
+enum CheckInMethod {
+  ROOM_QR
+  STAFF_OVERRIDE
+
+  @@map("check_in_method")
+}
+
+enum PaymentReferencePurpose {
+  CHARGE
+  REFUND
+
+  @@map("payment_reference_purpose")
+}
+
+enum ActorType {
+  STUDENT
+  STAFF
+  SYSTEM
+
+  @@map("actor_type")
+}
+
+enum IdempotencyState {
+  PROCESSING
+  COMPLETED
+  FAILED_FINAL
+
+  @@map("idempotency_state")
+}
+
+enum OutboxPublishState {
+  PENDING
+  PUBLISHED
+  FAILED
+
+  @@map("outbox_publish_state")
+}
+
+model Institution {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  code               String                    @unique @db.VarChar(50)
+  name               String                    @db.VarChar(200)
+  timezone           String                    @db.VarChar(64)
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  campuses           Campus[]
+  users              AppUser[]
+  rooms              Room[]
+  timelineGuards     RoomTimelineGuard[]
+  timeBlocks         RoomTimeBlock[]
+  checkInCredentials RoomCheckInCredential[]
+  bookingPolicies    BookingPolicyVersion[]
+  roomBookings       RoomBooking[]
+  actorGuards        BookingActorGuard[]
+  bookingHistories   BookingStatusHistory[]
+  bookingCheckIns    BookingCheckIn[]
+  paymentReferences  BookingPaymentReference[]
+  idempotencyRecords IdempotencyRecord[]
+  outboxMessages     OutboxMessage[]
+  auditRecords       AuditRecord[]
+
+  @@map("institutions")
+}
+
+model Campus {
+  id            String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId String        @map("institution_id") @db.Uuid
+  code          String        @db.VarChar(50)
+  name          String        @db.VarChar(200)
+  active        Boolean       @default(true)
+  createdAt     DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime      @updatedAt @map("updated_at") @db.Timestamptz(6)
+  institution   Institution   @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  rooms         Room[]
+  roomBookings  RoomBooking[]
+
+  @@unique([institutionId, code])
+  @@index([institutionId, active])
+  @@map("campuses")
+}
+
+model AppUser {
+  id            String              @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId String              @map("institution_id") @db.Uuid
+  externalRef   String              @map("external_ref") @db.VarChar(200)
+  email         String              @db.VarChar(320)
+  displayName   String              @map("display_name") @db.VarChar(200)
+  active        Boolean             @default(true)
+  passwordHash  String?             @map("password_hash") @db.VarChar(100)
+  createdAt     DateTime            @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt     DateTime            @updatedAt @map("updated_at") @db.Timestamptz(6)
+  institution   Institution         @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  roomBookings  RoomBooking[]
+  bookingGuard  BookingActorGuard?
+  idempotencies IdempotencyRecord[]
+  authSessions  AuthSession[]
+
+  @@unique([institutionId, externalRef])
+  @@unique([institutionId, email])
+  @@index([institutionId, active])
+  @@map("app_users")
+}
+
+model AuthSession {
+  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  userId           String    @map("user_id") @db.Uuid
+  refreshTokenHash String    @map("refresh_token_hash") @db.Char(64)
+  expiresAt        DateTime  @map("expires_at") @db.Timestamptz(6)
+  revokedAt        DateTime? @map("revoked_at") @db.Timestamptz(6)
+  lastUsedAt       DateTime? @map("last_used_at") @db.Timestamptz(6)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.Timestamptz(6)
+  user             AppUser   @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([expiresAt])
+  @@map("auth_sessions")
+}
+
+model Room {
+  id                     String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId          String                  @map("institution_id") @db.Uuid
+  campusId               String                  @map("campus_id") @db.Uuid
+  code                   String                  @db.VarChar(50)
+  displayName            String                  @map("display_name") @db.VarChar(200)
+  capacity               Int
+  bookableByStudents     Boolean                 @default(false) @map("bookable_by_students")
+  openingPolicyReference String?                 @map("opening_policy_reference") @db.VarChar(200)
+  active                 Boolean                 @default(true)
+  version                Int                     @default(1)
+  createdAt              DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt              DateTime                @updatedAt @map("updated_at") @db.Timestamptz(6)
+  institution            Institution             @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  campus                 Campus                  @relation(fields: [campusId], references: [id], onDelete: Restrict)
+  timelineGuard          RoomTimelineGuard?
+  timeBlocks             RoomTimeBlock[]
+  checkInCredentials     RoomCheckInCredential[]
+  bookings               RoomBooking[]
+
+  @@unique([campusId, code])
+  @@index([institutionId, campusId, active, bookableByStudents])
+  @@map("rooms")
+}
+
+model RoomTimelineGuard {
+  roomId        String      @id @map("room_id") @db.Uuid
+  institutionId String      @map("institution_id") @db.Uuid
+  version       Int         @default(1)
+  institution   Institution @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  room          Room        @relation(fields: [roomId], references: [id], onDelete: Cascade)
+
+  @@index([institutionId])
+  @@map("room_timeline_guards")
+}
+
+model RoomTimeBlock {
+  id              String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId   String                    @map("institution_id") @db.Uuid
+  campusId        String                    @map("campus_id") @db.Uuid
+  roomId          String                    @map("room_id") @db.Uuid
+  startsAt        DateTime                  @map("starts_at") @db.Timestamptz(6)
+  endsAt          DateTime                  @map("ends_at") @db.Timestamptz(6)
+  timeRange       Unsupported("tstzrange")? @map("time_range")
+  sourceType      RoomTimeBlockSource       @map("source_type")
+  sourceReference String                    @map("source_reference") @db.VarChar(200)
+  state           RoomTimeBlockState        @default(ACTIVE)
+  releaseReason   String?                   @map("release_reason") @db.VarChar(500)
+  releasedAt      DateTime?                 @map("released_at") @db.Timestamptz(6)
+  version         Int                       @default(1)
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  institution     Institution               @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  room            Room                      @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  booking         RoomBooking?
+
+  @@index([institutionId, roomId, state])
+  @@index([institutionId, sourceType, sourceReference])
+  @@map("room_time_blocks")
+}
+
+model RoomCheckInCredential {
+  id            String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId String           @map("institution_id") @db.Uuid
+  roomId        String           @map("room_id") @db.Uuid
+  tokenHash     Bytes            @map("token_hash")
+  activeFrom    DateTime         @map("active_from") @db.Timestamptz(6)
+  revokedAt     DateTime?        @map("revoked_at") @db.Timestamptz(6)
+  createdAt     DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  institution   Institution      @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  room          Room             @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  checkIns      BookingCheckIn[]
+
+  @@index([institutionId, roomId, revokedAt])
+  @@map("room_check_in_credentials")
+}
+
+model BookingPolicyVersion {
+  id                        String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId             String        @map("institution_id") @db.Uuid
+  scopeType                 String        @map("scope_type") @db.VarChar(30)
+  scopeReference            String?       @map("scope_reference") @db.VarChar(200)
+  versionNumber             Int           @map("version_number")
+  effectiveFrom             DateTime      @map("effective_from") @db.Timestamptz(6)
+  effectiveUntil            DateTime?     @map("effective_until") @db.Timestamptz(6)
+  leadTimeMinutes           Int           @map("lead_time_minutes")
+  bookingHorizonDays        Int           @map("booking_horizon_days")
+  maxDurationMinutes        Int           @map("max_duration_minutes")
+  activeBookingLimit        Int           @map("active_booking_limit")
+  paymentHoldMinutes        Int           @map("payment_hold_minutes")
+  checkInOpensBeforeMinutes Int           @map("check_in_opens_before_minutes")
+  checkInClosesAfterMinutes Int           @map("check_in_closes_after_minutes")
+  fullRefundBeforeMinutes   Int           @map("full_refund_before_minutes")
+  noShowRefundable          Boolean       @default(false) @map("no_show_refundable")
+  priceAmountMinor          BigInt        @default(0) @map("price_amount_minor")
+  priceCurrency             String        @default("VND") @map("price_currency") @db.Char(3)
+  snapshotSchemaVersion     Int           @default(1) @map("snapshot_schema_version")
+  publishedBy               String        @map("published_by") @db.VarChar(200)
+  publishedAt               DateTime      @map("published_at") @db.Timestamptz(6)
+  createdAt                 DateTime      @default(now()) @map("created_at") @db.Timestamptz(6)
+  institution               Institution   @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  bookings                  RoomBooking[]
+
+  @@unique([institutionId, scopeType, scopeReference, versionNumber])
+  @@index([institutionId, scopeType, scopeReference, effectiveFrom, effectiveUntil])
+  @@map("booking_policy_versions")
+}
+
+model RoomBooking {
+  id                 String                    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId      String                    @map("institution_id") @db.Uuid
+  campusId           String                    @map("campus_id") @db.Uuid
+  roomId             String                    @map("room_id") @db.Uuid
+  bookerId           String                    @map("booker_id") @db.Uuid
+  timeBlockId        String                    @unique @map("time_block_id") @db.Uuid
+  policyVersionId    String                    @map("policy_version_id") @db.Uuid
+  startsAt           DateTime                  @map("starts_at") @db.Timestamptz(6)
+  endsAt             DateTime                  @map("ends_at") @db.Timestamptz(6)
+  attendeeCount      Int                       @map("attendee_count")
+  purpose            String                    @db.VarChar(500)
+  status             RoomBookingStatus
+  holdExpiresAt      DateTime?                 @map("hold_expires_at") @db.Timestamptz(6)
+  checkedInAt        DateTime?                 @map("checked_in_at") @db.Timestamptz(6)
+  completedAt        DateTime?                 @map("completed_at") @db.Timestamptz(6)
+  terminalReasonCode String?                   @map("terminal_reason_code") @db.VarChar(100)
+  priceAmountMinor   BigInt                    @map("price_amount_minor")
+  priceCurrency      String                    @map("price_currency") @db.Char(3)
+  policySnapshot     Json                      @map("policy_snapshot") @db.JsonB
+  version            Int                       @default(1)
+  createdAt          DateTime                  @default(now()) @map("created_at") @db.Timestamptz(6)
+  updatedAt          DateTime                  @updatedAt @map("updated_at") @db.Timestamptz(6)
+  institution        Institution               @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  campus             Campus                    @relation(fields: [campusId], references: [id], onDelete: Restrict)
+  room               Room                      @relation(fields: [roomId], references: [id], onDelete: Restrict)
+  booker             AppUser                   @relation(fields: [bookerId], references: [id], onDelete: Restrict)
+  timeBlock          RoomTimeBlock             @relation(fields: [timeBlockId], references: [id], onDelete: Restrict)
+  policyVersion      BookingPolicyVersion      @relation(fields: [policyVersionId], references: [id], onDelete: Restrict)
+  statusHistory      BookingStatusHistory[]
+  checkIn            BookingCheckIn?
+  paymentReferences  BookingPaymentReference[]
+
+  @@index([institutionId, bookerId, status, startsAt])
+  @@index([institutionId, campusId, startsAt, endsAt, status])
+  @@index([institutionId, roomId, startsAt, endsAt, status])
+  @@index([status, holdExpiresAt])
+  @@index([status, startsAt])
+  @@index([status, endsAt])
+  @@map("room_bookings")
+}
+
+model BookingActorGuard {
+  bookerId      String      @id @map("booker_id") @db.Uuid
+  institutionId String      @map("institution_id") @db.Uuid
+  version       Int         @default(1)
+  institution   Institution @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  booker        AppUser     @relation(fields: [bookerId], references: [id], onDelete: Cascade)
+
+  @@index([institutionId])
+  @@map("booking_actor_guards")
+}
+
+model BookingStatusHistory {
+  id             String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId  String             @map("institution_id") @db.Uuid
+  bookingId      String             @map("booking_id") @db.Uuid
+  fromStatus     RoomBookingStatus? @map("from_status")
+  toStatus       RoomBookingStatus  @map("to_status")
+  transitionType String             @map("transition_type") @db.VarChar(100)
+  actorType      ActorType          @map("actor_type")
+  actorReference String             @map("actor_reference") @db.VarChar(200)
+  reasonCode     String?            @map("reason_code") @db.VarChar(100)
+  reasonDetail   String?            @map("reason_detail") @db.VarChar(1000)
+  metadata       Json?              @db.JsonB
+  occurredAt     DateTime           @map("occurred_at") @db.Timestamptz(6)
+  correlationId  String             @map("correlation_id") @db.VarChar(128)
+  causationId    String?            @map("causation_id") @db.VarChar(128)
+  institution    Institution        @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  booking        RoomBooking        @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([institutionId, bookingId, occurredAt])
+  @@map("booking_status_history")
+}
+
+model BookingCheckIn {
+  id             String                 @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId  String                 @map("institution_id") @db.Uuid
+  bookingId      String                 @unique @map("booking_id") @db.Uuid
+  method         CheckInMethod
+  credentialId   String?                @map("credential_id") @db.Uuid
+  actorReference String                 @map("actor_reference") @db.VarChar(200)
+  overrideReason String?                @map("override_reason") @db.VarChar(500)
+  checkedInAt    DateTime               @map("checked_in_at") @db.Timestamptz(6)
+  correlationId  String                 @map("correlation_id") @db.VarChar(128)
+  institution    Institution            @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  booking        RoomBooking            @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+  credential     RoomCheckInCredential? @relation(fields: [credentialId], references: [id], onDelete: Restrict)
+
+  @@index([institutionId, checkedInAt])
+  @@map("booking_check_ins")
+}
+
+model BookingPaymentReference {
+  id                   String                  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId        String                  @map("institution_id") @db.Uuid
+  bookingId            String                  @map("booking_id") @db.Uuid
+  paymentReference     String                  @unique @map("payment_reference") @db.VarChar(200)
+  purpose              PaymentReferencePurpose
+  requestedAmountMinor BigInt                  @map("requested_amount_minor")
+  currency             String                  @db.Char(3)
+  createdAt            DateTime                @default(now()) @map("created_at") @db.Timestamptz(6)
+  institution          Institution             @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  booking              RoomBooking             @relation(fields: [bookingId], references: [id], onDelete: Restrict)
+
+  @@index([institutionId, bookingId, purpose])
+  @@map("booking_payment_references")
+}
+
+model IdempotencyRecord {
+  id                 String           @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId      String           @map("institution_id") @db.Uuid
+  actorId            String           @map("actor_id") @db.Uuid
+  operationScope     String           @map("operation_scope") @db.VarChar(100)
+  operationKey       String           @map("operation_key") @db.VarChar(128)
+  requestFingerprint Bytes            @map("request_fingerprint")
+  state              IdempotencyState
+  resultReference    String?          @map("result_reference") @db.VarChar(200)
+  responseSnapshot   Json?            @map("response_snapshot") @db.JsonB
+  createdAt          DateTime         @default(now()) @map("created_at") @db.Timestamptz(6)
+  completedAt        DateTime?        @map("completed_at") @db.Timestamptz(6)
+  expiresAt          DateTime         @map("expires_at") @db.Timestamptz(6)
+  institution        Institution      @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+  actor              AppUser          @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@unique([institutionId, actorId, operationScope, operationKey], name: "operationIdentity")
+  @@index([state, expiresAt])
+  @@map("idempotency_records")
+}
+
+model OutboxMessage {
+  id            String             @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId String             @map("institution_id") @db.Uuid
+  aggregateType String             @map("aggregate_type") @db.VarChar(100)
+  aggregateId   String             @map("aggregate_id") @db.Uuid
+  eventType     String             @map("event_type") @db.VarChar(150)
+  eventVersion  Int                @default(1) @map("event_version")
+  payload       Json               @db.JsonB
+  occurredAt    DateTime           @map("occurred_at") @db.Timestamptz(6)
+  correlationId String             @map("correlation_id") @db.VarChar(128)
+  causationId   String?            @map("causation_id") @db.VarChar(128)
+  publishState  OutboxPublishState @default(PENDING) @map("publish_state")
+  attemptCount  Int                @default(0) @map("attempt_count")
+  nextAttemptAt DateTime           @default(now()) @map("next_attempt_at") @db.Timestamptz(6)
+  publishedAt   DateTime?          @map("published_at") @db.Timestamptz(6)
+  lastError     String?            @map("last_error") @db.VarChar(1000)
+  institution   Institution        @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+
+  @@index([publishState, nextAttemptAt])
+  @@index([institutionId, aggregateType, aggregateId, occurredAt])
+  @@map("outbox_messages")
+}
+
+model AuditRecord {
+  id               String      @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
+  institutionId    String      @map("institution_id") @db.Uuid
+  actorType        ActorType   @map("actor_type")
+  actorReference   String      @map("actor_reference") @db.VarChar(200)
+  action           String      @db.VarChar(150)
+  subjectType      String      @map("subject_type") @db.VarChar(100)
+  subjectReference String      @map("subject_reference") @db.VarChar(200)
+  reasonCode       String?     @map("reason_code") @db.VarChar(100)
+  beforeSummary    Json?       @map("before_summary") @db.JsonB
+  afterSummary     Json?       @map("after_summary") @db.JsonB
+  occurredAt       DateTime    @map("occurred_at") @db.Timestamptz(6)
+  correlationId    String      @map("correlation_id") @db.VarChar(128)
+  institution      Institution @relation(fields: [institutionId], references: [id], onDelete: Restrict)
+
+  @@index([institutionId, subjectType, subjectReference, occurredAt])
+  @@index([institutionId, actorReference, occurredAt])
+  @@map("audit_records")
+}
